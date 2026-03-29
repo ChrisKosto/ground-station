@@ -1,3 +1,6 @@
+# Satellite Ground Station Dashboard
+# Author: Christos Kostogiannis
+
 from flask import Flask, render_template, jsonify
 from skyfield.api import load, wgs84, EarthSatellite
 from datetime import datetime, timedelta, timezone

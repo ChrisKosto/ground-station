@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+    <meta charset="UTF-8">
+    <title>Satellite Ground Station</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script>
+        window.APP_DATA = {
+            nextPassIso: {{ data.next_pass.time_iso|tojson }},
+            satelliteMapData: {{ data.satellite_map|tojson }},
+            mapRefreshSeconds: {{ data.map_refresh_seconds|tojson }},
+            initialDashboardData: {{ data|tojson }},
+            groundStation: {
+                name: "Athens Ground Station",
+                lat: 37.9838,
+                lon: 23.7275
+            },
+            satelliteColors: {
+                "NOAA 15": "#36d399",
+                "NOAA 18": "#ff8c42",
+                "NOAA 19": "#ff5fa2",
+                "ISS (ZARYA)": "#f8fafc"
+            }
+        };
+    </script>
+</head>
+<body>
+    <div class="dashboard">
+        <div class="title">📡 Station Dashboard</div>
+
+        <div class="top-grid">
+            <div class="card">
+                <div class="label">Last Captured Pass</div>
+                <div class="value" id="last-pass-satellite">{{ data.last_pass.satellite }}</div>
+                <div class="subvalue" id="last-pass-time">{{ data.last_pass.time }}</div>
+                <img id="last-pass-image" src="{{ data.last_pass.image }}" class="pass-image" alt="Satellite image">
+            </div>
+
+            <div class="card">
+                <div class="label">Next Satellite Target</div>
+                <div class="value" id="next-pass-sat">{{ data.next_pass.sat }}</div>
+                <div class="subvalue" id="next-pass-time">{{ data.next_pass.time }}</div>
+                <div class="timer" id="countdown">--:--:--</div>
+
+                <div class="status-row">
+                    <div class="status-pill">
+                        Max elevation:
+                        <strong id="next-pass-elev">{{ data.next_pass.elev }}</strong>°
+                    </div>
+                    <div class="status-pill">
+                        Duration:
+                        <strong id="next-pass-duration">{{ data.next_pass.duration }}</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card table-card">
+            <h3>Upcoming NOAA Passes</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Satellite</th>
+                        <th>Rise</th>
+                        <th>Culmination</th>
+                        <th>Set</th>
+                        <th>Max Elevation</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="passes-table-body">
+                    {% for p in data.upcoming_passes %}
+                    <tr>
+                        <td>{{ p.sat }}</td>
+                        <td>{{ p.rise_time }}</td>
+                        <td>{{ p.culmination_time }}</td>
+                        <td>{{ p.set_time }}</td>
+                        <td>{{ p.max_elevation }}°</td>
+                        <td>{{ p.duration_min }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <div class="refresh-note">
+                Auto refresh κάθε 60 δευτερόλεπτα
+            </div>
+        </div>
+
+        <div class="card map-card">
+            <h3>Live Satellite Map</h3>
+
+            <div class="view-switcher">
+                <button id="flat-view-btn" class="view-btn active" type="button">Flat Map</button>
+                <button id="globe-view-btn" class="view-btn" type="button">Globe View</button>
+            </div>
+
+            <div class="map-legend">
+                <div class="legend-item">
+                    <span class="legend-dot" style="background: #36d399;"></span>
+                    <span>NOAA 15</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background: #ff8c42;"></span>
+                    <span>NOAA 18</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background: #ff5fa2;"></span>
+                    <span>NOAA 19</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background: #f8fafc;"></span>
+                    <span>ISS</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background: #00d4ff;"></span>
+                    <span>Ground Station</span>
+                </div>
+            </div>
+
+            <div class="map-view" id="flat-map-wrapper">
+                <div id="satellite-map"></div>
+            </div>
+
+            <div class="map-view hidden-view" id="globe-map-wrapper">
+                <div id="globe-view"></div>
+                <div class="globe-info hidden" id="globe-info-panel"></div>
+                <div class="globe-hint">Drag για περιστροφή · scroll για zoom · click για pin</div>
+            </div>
+
+            <div class="refresh-note" id="map-refresh-note">
+                Ο χάρτης ανανεώνεται κάθε {{ data.map_refresh_seconds }} δευτερόλεπτα
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/three"></script>
+    <script src="https://unpkg.com/globe.gl"></script>
+
+    <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/flat-map.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/globe.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

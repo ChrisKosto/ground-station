@@ -32,6 +32,8 @@
     <div class="dashboard">
         <div class="title">📡 Station Dashboard</div>
 
+        <div id="system-status" class="system-status hidden" role="status" aria-live="polite"></div>
+
         <div class="top-grid">
             <div class="card">
                 <div class="label">Last Captured Pass</div>
@@ -146,8 +148,9 @@
     <script src="{{ url_for('static', filename='js/flat-map.js') }}"></script>
     <script src="{{ url_for('static', filename='js/globe.js') }}"></script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-<footer style="text-align:center; margin-top:20px; opacity:0.6; font-size:12px;">
-  Built by Christos Kostogiannis
-</footer>
+
+    <footer style="text-align:center; margin-top:20px; opacity:0.6; font-size:12px;">
+        Built by Christos Kostogiannis
+    </footer>
 </body>
 </html>

@@ -15,6 +15,11 @@
     box-sizing: border-box;
 }
 
+html,
+body {
+    min-height: 100%;
+}
+
 body {
     background: url("/static/images/earth.jpg") no-repeat center center fixed;
     background-size: cover;
@@ -45,6 +50,32 @@ body::before {
     margin-bottom: 25px;
     font-size: 28px;
     font-weight: 700;
+}
+
+.system-status {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: rgba(16, 22, 29, 0.92);
+    color: var(--text);
+    font-size: 0.95em;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.22);
+    backdrop-filter: blur(6px);
+}
+
+.system-status.info {
+    border-color: rgba(0, 212, 255, 0.35);
+}
+
+.system-status.error {
+    border-color: rgba(255, 95, 162, 0.45);
+    color: #ffd1e5;
+    background: rgba(60, 10, 30, 0.35);
+}
+
+.system-status.hidden {
+    display: none;
 }
 
 .top-grid {
@@ -99,6 +130,7 @@ body::before {
     margin-top: 12px;
     border: 1px solid var(--border);
     display: block;
+    object-fit: cover;
 }
 
 .table-card h3,
@@ -168,6 +200,10 @@ tbody tr:hover {
     font-size: 0.9em;
 }
 
+.status-pill strong {
+    color: var(--text);
+}
+
 .map-card {
     margin-top: 20px;
 }
@@ -209,6 +245,7 @@ tbody tr:hover {
     border: 1px solid var(--border);
     overflow: hidden;
     position: relative;
+    background: rgba(5, 10, 20, 0.35);
 }
 
 #satellite-map,
@@ -241,6 +278,12 @@ tbody tr:hover {
     height: 12px;
     border-radius: 50%;
     display: inline-block;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.08);
+}
+
+.leaflet-container {
+    background: #09111f;
+    font: inherit;
 }
 
 .leaflet-tooltip.satellite-tooltip {
@@ -251,6 +294,10 @@ tbody tr:hover {
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
     padding: 10px 12px;
     font-size: 13px;
+}
+
+.leaflet-tooltip.satellite-tooltip::before {
+    border-top-color: rgba(11, 14, 20, 0.96);
 }
 
 .leaflet-popup-content-wrapper {
@@ -270,6 +317,16 @@ tbody tr:hover {
     min-width: 200px;
 }
 
+.leaflet-control-zoom a {
+    background-color: rgba(11, 14, 20, 0.95) !important;
+    color: var(--text) !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+
+.leaflet-control-zoom a:hover {
+    color: var(--blue) !important;
+}
+
 .sat-tooltip-title {
     color: var(--blue);
     font-weight: 700;
@@ -279,6 +336,7 @@ tbody tr:hover {
 .sat-tooltip-line {
     color: var(--text);
     margin-bottom: 3px;
+    line-height: 1.4;
 }
 
 .sat-tooltip-muted {
@@ -387,36 +445,137 @@ tbody tr:hover {
     position: absolute;
     left: 14px;
     bottom: 14px;
-    z-index: 50;
+    z-index: 40;
     padding: 8px 12px;
     border-radius: 999px;
-    background: rgba(11, 14, 20, 0.85);
+    background: rgba(11, 14, 20, 0.9);
     border: 1px solid var(--border);
     color: var(--muted);
     font-size: 0.85em;
+    backdrop-filter: blur(6px);
 }
 
-@media (max-width: 900px) {
+footer {
+    text-align: center;
+    margin-top: 20px;
+    opacity: 0.6;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+@media (max-width: 1024px) {
+    .dashboard {
+        max-width: 100%;
+    }
+
+    .map-view {
+        height: 480px;
+    }
+}
+
+@media (max-width: 768px) {
+    body {
+        padding: 14px;
+    }
+
+    .title {
+        font-size: 22px;
+        letter-spacing: 1px;
+    }
+
     .top-grid {
         grid-template-columns: 1fr;
+    }
+
+    .card {
+        padding: 16px;
     }
 
     .timer {
         font-size: 2em;
     }
 
-    th,
-    td {
-        font-size: 0.85em;
-        padding: 10px 8px;
-    }
-
     .map-view {
         height: 420px;
     }
 
+    .view-switcher {
+        justify-content: flex-start;
+    }
+
+    .map-legend {
+        gap: 12px;
+    }
+
+    th,
+    td {
+        padding: 10px 8px;
+        font-size: 0.88em;
+    }
+
     .globe-info {
-        max-width: calc(100% - 28px);
-        min-width: unset;
+        right: 10px;
+        top: 10px;
+        left: 10px;
+        max-width: none;
+        min-width: 0;
+    }
+
+    .globe-hint {
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        border-radius: 10px;
+    }
+}
+
+@media (max-width: 560px) {
+    body {
+        padding: 10px;
+    }
+
+    .title {
+        font-size: 20px;
+    }
+
+    .value {
+        font-size: 1.3em;
+    }
+
+    .subvalue {
+        font-size: 0.88em;
+    }
+
+    .timer {
+        font-size: 1.7em;
+    }
+
+    .status-row {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .status-pill {
+        width: 100%;
+        text-align: center;
+    }
+
+    .map-view {
+        height: 340px;
+    }
+
+    .refresh-note {
+        text-align: left;
+        font-size: 0.82em;
+    }
+
+    table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    .map-legend {
+        font-size: 0.82em;
     }
 }

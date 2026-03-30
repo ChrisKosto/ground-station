@@ -5,8 +5,9 @@ from flask import Flask, render_template, jsonify
 from skyfield.api import load, wgs84, EarthSatellite
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-import os
 import math
+import os
+import threading
 import urllib.request
 
 app = Flask(__name__)
@@ -38,6 +39,10 @@ TRACK_STEP_SECONDS = 30
 MAP_REFRESH_SECONDS = 5
 TLE_CACHE_MINUTES = 30
 
+# New cache timings for optimization
+MAP_DATA_CACHE_SECONDS = 4
+DASHBOARD_CACHE_SECONDS = 20
+
 EARTH_RADIUS_KM = 6371.0
 
 try:
@@ -46,11 +51,29 @@ except Exception:
     LOCAL_TIMEZONE = timezone(timedelta(hours=2))
 
 ts = load.timescale()
+observer = wgs84.latlon(OBSERVER_LAT, OBSERVER_LON, elevation_m=OBSERVER_ELEV_M)
 
 _noaa_cache = {
     "satellites": None,
     "loaded_at": None
 }
+
+_response_cache = {
+    "dashboard": {
+        "value": None,
+        "created_at": None
+    },
+    "map": {
+        "value": None,
+        "created_at": None
+    }
+}
+
+_cache_lock = threading.Lock()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
 def to_local_datetime(skyfield_time):
@@ -84,7 +107,7 @@ def format_eta_from_seconds(seconds):
 
 
 def get_observer():
-    return wgs84.latlon(OBSERVER_LAT, OBSERVER_LON, elevation_m=OBSERVER_ELEV_M)
+    return observer
 
 
 def get_iss_satellite():
@@ -114,7 +137,7 @@ def download_tle_file(url, file_path):
 
 
 def load_noaa_satellites():
-    now_utc = datetime.now(timezone.utc)
+    now_utc = utc_now()
 
     if (
         _noaa_cache["satellites"] is not None
@@ -152,7 +175,7 @@ def load_noaa_satellites():
 
 
 def calculate_passes(start_utc, end_utc, satellites):
-    observer = get_observer()
+    obs = get_observer()
 
     t0 = ts.from_datetime(start_utc)
     t1 = ts.from_datetime(end_utc)
@@ -161,13 +184,14 @@ def calculate_passes(start_utc, end_utc, satellites):
 
     for sat in satellites:
         times, events = sat.find_events(
-            observer,
+            obs,
             t0,
             t1,
             altitude_degrees=MIN_ALTITUDE_DEGREES
         )
 
         current_pass = None
+        difference = sat - obs
 
         for ti, ev in zip(times, events):
             ev = int(ev)
@@ -182,7 +206,6 @@ def calculate_passes(start_utc, end_utc, satellites):
                 }
 
             elif ev == 1 and current_pass is not None:
-                difference = sat - observer
                 topocentric = difference.at(ti)
                 alt, az, distance = topocentric.altaz()
 
@@ -265,38 +288,44 @@ def get_next_pass_lookup(upcoming_passes):
     return lookup
 
 
-def build_track_points_for_satellite(satellite, now_utc):
-    points = []
+def get_track_offsets():
     total_seconds_before = TRACK_MINUTES_BEFORE * 60
     total_seconds_after = TRACK_MINUTES_AFTER * 60
+    return list(range(-total_seconds_before, total_seconds_after + 1, TRACK_STEP_SECONDS))
 
-    for offset_seconds in range(-total_seconds_before, total_seconds_after + 1, TRACK_STEP_SECONDS):
-        point_dt = now_utc + timedelta(seconds=offset_seconds)
-        point_t = ts.from_datetime(point_dt)
 
-        geocentric = satellite.at(point_t)
-        subpoint = wgs84.subpoint(geocentric)
+TRACK_OFFSETS = get_track_offsets()
 
+
+def build_track_points_for_satellite(satellite, now_utc):
+    point_datetimes = [now_utc + timedelta(seconds=offset) for offset in TRACK_OFFSETS]
+    point_times = ts.from_datetimes(point_datetimes)
+
+    geocentric = satellite.at(point_times)
+    subpoints = wgs84.subpoint(geocentric)
+
+    latitudes = subpoints.latitude.degrees
+    longitudes = subpoints.longitude.degrees
+
+    points = []
+    for i, offset_seconds in enumerate(TRACK_OFFSETS):
         points.append({
-            "lat": round(subpoint.latitude.degrees, 5),
-            "lon": round(subpoint.longitude.degrees, 5),
+            "lat": round(float(latitudes[i]), 5),
+            "lon": round(float(longitudes[i]), 5),
             "offset_sec": offset_seconds
         })
 
     return points
 
 
-def get_visibility_info(satellite, now_utc):
-    observer = get_observer()
-    t_now = ts.from_datetime(now_utc)
-
-    difference = satellite - observer
-    topocentric = difference.at(t_now)
+def get_visibility_info(satellite, now_time):
+    difference = satellite - get_observer()
+    topocentric = difference.at(now_time)
     alt, az, distance = topocentric.altaz()
 
     elevation = round(alt.degrees, 1)
 
-    if elevation > 10:
+    if elevation > MIN_ALTITUDE_DEGREES:
         return {
             "elevation": elevation,
             "status": "Visible",
@@ -328,13 +357,14 @@ def get_footprint_radius_km(altitude_km):
 
 def get_satellite_map_data(tracked_satellites, upcoming_passes, now_utc=None):
     if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
+        now_utc = utc_now()
 
     next_pass_lookup = get_next_pass_lookup(upcoming_passes)
     result = []
 
+    t_now = ts.from_datetime(now_utc)
+
     for sat in tracked_satellites:
-        t_now = ts.from_datetime(now_utc)
         geocentric = sat.at(t_now)
         subpoint = wgs84.subpoint(geocentric)
 
@@ -355,7 +385,7 @@ def get_satellite_map_data(tracked_satellites, upcoming_passes, now_utc=None):
             next_pass_time = "N/A"
             next_pass_iso = None
 
-        visibility = get_visibility_info(sat, now_utc)
+        visibility = get_visibility_info(sat, t_now)
 
         result.append({
             "name": sat.name,
@@ -376,23 +406,9 @@ def get_satellite_map_data(tracked_satellites, upcoming_passes, now_utc=None):
     return result
 
 
-def get_dashboard_data():
-    now_utc = datetime.now(timezone.utc)
-
-    noaa_satellites = load_noaa_satellites()
-    iss_satellite = get_iss_satellite()
-
-    tracked_satellites = noaa_satellites + [iss_satellite]
-
-    past_start_utc = now_utc - timedelta(hours=PAST_SEARCH_HOURS)
-    future_end_utc = now_utc + timedelta(hours=FUTURE_SEARCH_HOURS)
-
-    noaa_passes = calculate_passes(past_start_utc, future_end_utc, noaa_satellites)
-    tracked_upcoming_passes = calculate_passes(now_utc, future_end_utc, tracked_satellites)
-
+def split_noaa_passes(noaa_passes, now_local):
     past_passes = []
     upcoming_noaa_passes = []
-    now_local = now_utc.astimezone(LOCAL_TIMEZONE)
 
     for p in noaa_passes:
         set_dt = datetime.fromisoformat(p["set_time_iso"])
@@ -403,15 +419,94 @@ def get_dashboard_data():
         elif rise_dt >= now_local:
             upcoming_noaa_passes.append(p)
 
-    upcoming_noaa_passes = upcoming_noaa_passes[:MAX_UPCOMING_PASSES]
+    return past_passes, upcoming_noaa_passes[:MAX_UPCOMING_PASSES]
+
+
+def compute_core_data(now_utc=None):
+    if now_utc is None:
+        now_utc = utc_now()
+
+    noaa_satellites = load_noaa_satellites()
+    iss_satellite = get_iss_satellite()
+    tracked_satellites = noaa_satellites + [iss_satellite]
+
+    past_start_utc = now_utc - timedelta(hours=PAST_SEARCH_HOURS)
+    future_end_utc = now_utc + timedelta(hours=FUTURE_SEARCH_HOURS)
+
+    noaa_passes = calculate_passes(past_start_utc, future_end_utc, noaa_satellites)
+    tracked_upcoming_passes = calculate_passes(now_utc, future_end_utc, tracked_satellites)
+
+    now_local = now_utc.astimezone(LOCAL_TIMEZONE)
+    past_passes, upcoming_noaa_passes = split_noaa_passes(noaa_passes, now_local)
+
+    map_data = get_satellite_map_data(
+        tracked_satellites,
+        tracked_upcoming_passes,
+        now_utc=now_utc
+    )
 
     return {
-        "last_pass": get_last_pass_data(past_passes),
-        "next_pass": get_next_pass_data(upcoming_noaa_passes),
-        "upcoming_passes": upcoming_noaa_passes,
-        "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc),
+        "now_utc": now_utc,
+        "past_passes": past_passes,
+        "upcoming_noaa_passes": upcoming_noaa_passes,
+        "tracked_upcoming_passes": tracked_upcoming_passes,
+        "satellite_map": map_data
+    }
+
+
+def build_dashboard_payload(core_data):
+    return {
+        "last_pass": get_last_pass_data(core_data["past_passes"]),
+        "next_pass": get_next_pass_data(core_data["upcoming_noaa_passes"]),
+        "upcoming_passes": core_data["upcoming_noaa_passes"],
+        "satellite_map": core_data["satellite_map"],
         "map_refresh_seconds": MAP_REFRESH_SECONDS
     }
+
+
+def build_map_payload(core_data):
+    return {
+        "server_time_iso": core_data["now_utc"].isoformat(),
+        "map_refresh_seconds": MAP_REFRESH_SECONDS,
+        "satellite_map": core_data["satellite_map"]
+    }
+
+
+def get_cached_payload(cache_key, ttl_seconds, builder):
+    now_utc = utc_now()
+
+    with _cache_lock:
+        cache_entry = _response_cache[cache_key]
+        if (
+            cache_entry["value"] is not None
+            and cache_entry["created_at"] is not None
+            and (now_utc - cache_entry["created_at"]).total_seconds() < ttl_seconds
+        ):
+            return cache_entry["value"]
+
+    value = builder(now_utc)
+
+    with _cache_lock:
+        _response_cache[cache_key]["value"] = value
+        _response_cache[cache_key]["created_at"] = now_utc
+
+    return value
+
+
+def get_dashboard_data():
+    def builder(now_utc):
+        core_data = compute_core_data(now_utc)
+        return build_dashboard_payload(core_data)
+
+    return get_cached_payload("dashboard", DASHBOARD_CACHE_SECONDS, builder)
+
+
+def get_map_data():
+    def builder(now_utc):
+        core_data = compute_core_data(now_utc)
+        return build_map_payload(core_data)
+
+    return get_cached_payload("map", MAP_DATA_CACHE_SECONDS, builder)
 
 
 @app.route("/")
@@ -422,29 +517,13 @@ def index():
 
 @app.route("/api/passes")
 def api_passes():
-    data = get_dashboard_data()
-    return jsonify(data)
+    return jsonify(get_dashboard_data())
 
 
 @app.route("/api/map")
 def api_map():
-    now_utc = datetime.now(timezone.utc)
+    return jsonify(get_map_data())
 
-    noaa_satellites = load_noaa_satellites()
-    iss_satellite = get_iss_satellite()
-    tracked_satellites = noaa_satellites + [iss_satellite]
-
-    future_end_utc = now_utc + timedelta(hours=FUTURE_SEARCH_HOURS)
-    tracked_upcoming_passes = calculate_passes(now_utc, future_end_utc, tracked_satellites)
-
-    return jsonify({
-        "server_time_iso": now_utc.isoformat(),
-        "map_refresh_seconds": MAP_REFRESH_SECONDS,
-        "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc)
-    })
-
-
-import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

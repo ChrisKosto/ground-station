@@ -2,21 +2,29 @@ window.GlobeModule = (() => {
     const { buildInfoHtml, buildGroundStationHtml } = window.AppUtils;
 
     let globe = null;
+    let stateRef = null;
+
     let globeHoverSatellite = null;
     let globePinnedSatellite = null;
-    let globeResizeTimeout = null;
-    let stateRef = null;
+
+    let resizeObserver = null;
+    let isInitialized = false;
+
+    // Cached data (optimization)
+    let cachedPoints = [];
+    let cachedPaths = [];
+    let cachedPolygons = [];
 
     function setStateRef(ref) {
         stateRef = ref;
     }
 
     function getSatelliteColors() {
-        return stateRef.satelliteColors;
+        return stateRef?.satelliteColors || {};
     }
 
     function getGroundStation() {
-        return stateRef.groundStation;
+        return stateRef?.groundStation || { lat: 0, lon: 0, name: "GS" };
     }
 
     function getInfoPanel() {
@@ -24,12 +32,18 @@ window.GlobeModule = (() => {
     }
 
     function getSatelliteByName(name) {
-        return stateRef.satelliteMapData.find(s => s.name === name) || null;
+        return stateRef?.satelliteMapData.find(s => s.name === name) || null;
     }
 
-    function getGlobePointObjects() {
-        const points = stateRef.satelliteMapData.map(sat => ({
-            ...sat,
+    // =========================
+    // DATA BUILDERS (CACHED)
+    // =========================
+
+    function buildPointData() {
+        const sats = stateRef?.satelliteMapData || [];
+
+        cachedPoints = sats.map(sat => ({
+            name: sat.name,
             lat: sat.current.lat,
             lng: sat.current.lon,
             size: sat.name === "ISS (ZARYA)" ? 1.0 : 0.82,
@@ -37,7 +51,7 @@ window.GlobeModule = (() => {
             isGroundStation: false
         }));
 
-        points.push({
+        cachedPoints.push({
             name: getGroundStation().name,
             lat: getGroundStation().lat,
             lng: getGroundStation().lon,
@@ -46,32 +60,33 @@ window.GlobeModule = (() => {
             isGroundStation: true
         });
 
-        return points;
+        return cachedPoints;
     }
 
-    function getSmoothOrbitPathData() {
-        return stateRef.satelliteMapData
-            .map(sat => {
-                const track = sat.track || [];
-                if (track.length < 2) return null;
+    function buildPathData() {
+        const sats = stateRef?.satelliteMapData || [];
 
-                const altitude = sat.name === "ISS (ZARYA)" ? 0.03 : 0.022;
+        cachedPaths = sats
+            .map(sat => {
+                if (!sat.track || sat.track.length < 2) return null;
 
                 return {
                     satName: sat.name,
                     color: getSatelliteColors()[sat.name] || "#00d4ff",
                     stroke: sat.name === "ISS (ZARYA)" ? 0.55 : 0.42,
-                    points: track.map(p => ({
+                    points: sat.track.map(p => ({
                         lat: p.lat,
                         lng: p.lon,
-                        alt: altitude
+                        alt: sat.name === "ISS (ZARYA)" ? 0.03 : 0.022
                     }))
                 };
             })
             .filter(Boolean);
+
+        return cachedPaths;
     }
 
-    function getFootprintPolygonPoints(sat) {
+    function buildFootprintPolygon(sat) {
         if (!sat || !sat.current || !sat.footprint_radius_km) return [];
 
         const lat0 = sat.current.lat * Math.PI / 180;
@@ -104,28 +119,35 @@ window.GlobeModule = (() => {
         return points;
     }
 
-    function getPolygonData() {
+    function buildPolygonData() {
         const sat = globePinnedSatellite || globeHoverSatellite;
         if (!sat) return [];
 
-        const polygon = getFootprintPolygonPoints(sat);
+        const polygon = buildFootprintPolygon(sat);
         if (!polygon.length) return [];
 
         const color = getSatelliteColors()[sat.name] || "#00d4ff";
 
-        return [{
+        cachedPolygons = [{
             satName: sat.name,
             color: color,
             coords: [polygon],
             capColor: color,
-            sideColor: color,
             strokeColor: color
         }];
+
+        return cachedPolygons;
     }
 
-    function renderGlobeOverlay() {
+    // =========================
+    // UI OVERLAY
+    // =========================
+
+    function renderOverlay() {
         const panel = getInfoPanel();
         const sat = globePinnedSatellite || globeHoverSatellite;
+
+        if (!panel) return;
 
         if (!sat) {
             panel.classList.add("hidden");
@@ -135,14 +157,20 @@ window.GlobeModule = (() => {
         }
 
         if (globe) {
-            globe.polygonsData(getPolygonData());
+            globe.polygonsData(buildPolygonData());
         }
     }
 
-    function sizeGlobeRenderer() {
+    // =========================
+    // SIZE HANDLING
+    // =========================
+
+    function resizeGlobe() {
         if (!globe) return;
 
         const wrapper = document.getElementById("globe-map-wrapper");
+        if (!wrapper) return;
+
         const width = wrapper.clientWidth;
         const height = wrapper.clientHeight;
 
@@ -151,6 +179,21 @@ window.GlobeModule = (() => {
             globe.height(height);
         }
     }
+
+    function setupResizeObserver() {
+        const wrapper = document.getElementById("globe-map-wrapper");
+        if (!wrapper) return;
+
+        resizeObserver = new ResizeObserver(() => {
+            resizeGlobe();
+        });
+
+        resizeObserver.observe(wrapper);
+    }
+
+    // =========================
+    // CAMERA
+    // =========================
 
     function focusOnSatellite(sat, ms = 800) {
         if (!globe || !sat) return;
@@ -165,7 +208,13 @@ window.GlobeModule = (() => {
         );
     }
 
+    // =========================
+    // INIT
+    // =========================
+
     function init(containerId) {
+        if (isInitialized) return;
+
         const container = document.getElementById(containerId);
 
         globe = Globe()(container)
@@ -176,7 +225,8 @@ window.GlobeModule = (() => {
             .atmosphereColor("#4cc9ff")
             .atmosphereAltitude(0.16)
 
-            .pointsData(getGlobePointObjects())
+            // POINTS
+            .pointsData(buildPointData())
             .pointLat(d => d.lat)
             .pointLng(d => d.lng)
             .pointAltitude(d => d.isGroundStation ? 0.01 : 0.03)
@@ -184,7 +234,8 @@ window.GlobeModule = (() => {
             .pointColor(d => d.color)
             .pointsMerge(false)
 
-            .pathsData(getSmoothOrbitPathData())
+            // PATHS
+            .pathsData(buildPathData())
             .pathPoints(d => d.points)
             .pathPointLat(p => p.lat)
             .pathPointLng(p => p.lng)
@@ -198,7 +249,8 @@ window.GlobeModule = (() => {
             .pathDashAnimateTime(5000)
             .pathTransitionDuration(0)
 
-            .polygonsData(getPolygonData())
+            // POLYGONS
+            .polygonsData(buildPolygonData())
             .polygonGeoJsonGeometry(d => ({
                 type: "Polygon",
                 coordinates: [d.coords[0].map(([lat, lng]) => [lng, lat])]
@@ -208,9 +260,10 @@ window.GlobeModule = (() => {
             .polygonStrokeColor(d => d.strokeColor)
             .polygonAltitude(0.0025)
 
-            .htmlElementsData(getGlobePointObjects().filter(p => p.isGroundStation))
-            .htmlLat(point => point.lat)
-            .htmlLng(point => point.lng)
+            // GROUND STATION ICON
+            .htmlElementsData(buildPointData().filter(p => p.isGroundStation))
+            .htmlLat(d => d.lat)
+            .htmlLng(d => d.lng)
             .htmlElement(() => {
                 const el = document.createElement("div");
                 el.innerHTML = "📡";
@@ -221,6 +274,7 @@ window.GlobeModule = (() => {
                 return el;
             })
 
+            // EVENTS
             .onPointHover(point => {
                 if (globePinnedSatellite) return;
 
@@ -230,7 +284,7 @@ window.GlobeModule = (() => {
                     globeHoverSatellite = null;
                 }
 
-                renderGlobeOverlay();
+                renderOverlay();
             })
 
             .onPointClick(point => {
@@ -239,18 +293,19 @@ window.GlobeModule = (() => {
                 if (point.isGroundStation) {
                     globePinnedSatellite = null;
                     globeHoverSatellite = null;
-                    getInfoPanel().innerHTML = buildGroundStationHtml(getGroundStation());
-                    getInfoPanel().classList.remove("hidden");
 
-                    if (globe) {
-                        globe.polygonsData([]);
-                    }
+                    const panel = getInfoPanel();
+                    panel.innerHTML = buildGroundStationHtml(getGroundStation());
+                    panel.classList.remove("hidden");
+
+                    globe.polygonsData([]);
                     return;
                 }
 
                 globePinnedSatellite = getSatelliteByName(point.name);
                 globeHoverSatellite = null;
-                renderGlobeOverlay();
+
+                renderOverlay();
                 focusOnSatellite(globePinnedSatellite, 900);
             });
 
@@ -262,72 +317,70 @@ window.GlobeModule = (() => {
         controls.minDistance = 180;
         controls.maxDistance = 350;
         controls.zoomSpeed = 0.8;
-        controls.panSpeed = 0.8;
 
-        sizeGlobeRenderer();
+        resizeGlobe();
+        setupResizeObserver();
+
         globe.pointOfView({ lat: 20, lng: 10, altitude: 2.2 }, 0);
+
+        isInitialized = true;
     }
+
+    // =========================
+    // UPDATE
+    // =========================
 
     function updateData() {
         if (!globe) return;
 
         if (globePinnedSatellite) {
-            const refreshedPinned = getSatelliteByName(globePinnedSatellite.name);
-            globePinnedSatellite = refreshedPinned || null;
+            globePinnedSatellite = getSatelliteByName(globePinnedSatellite.name);
         }
 
         if (globeHoverSatellite) {
-            const refreshedHover = getSatelliteByName(globeHoverSatellite.name);
-            globeHoverSatellite = refreshedHover || null;
+            globeHoverSatellite = getSatelliteByName(globeHoverSatellite.name);
         }
 
-        globe.pointsData(getGlobePointObjects());
-        globe.pathsData(getSmoothOrbitPathData());
+        globe.pointsData(buildPointData());
+        globe.pathsData(buildPathData());
 
-        sizeGlobeRenderer();
-        renderGlobeOverlay();
+        resizeGlobe();
+        renderOverlay();
     }
 
     function show() {
         setTimeout(() => {
-            if (!globe) {
-                init("globe-view");
-            } else {
-                sizeGlobeRenderer();
-                updateData();
-            }
-
-            clearTimeout(globeResizeTimeout);
-            globeResizeTimeout = setTimeout(() => {
-                sizeGlobeRenderer();
-                updateData();
-            }, 250);
-        }, 80);
+            resizeGlobe();
+        }, 100);
     }
 
     function clearPin() {
         globePinnedSatellite = null;
         globeHoverSatellite = null;
-        renderGlobeOverlay();
+
+        const panel = getInfoPanel();
+        if (panel) panel.classList.add("hidden");
+
+        if (globe) {
+            globe.polygonsData([]);
+        }
+    }
+
+    function isGlobeInitialized() {
+        return isInitialized;
     }
 
     function onResize() {
-        if (!globe) return;
-        sizeGlobeRenderer();
-        updateData();
-    }
-
-    function isInitialized() {
-        return !!globe;
+        resizeGlobe();
     }
 
     return {
         setStateRef,
-        show,
+        init,
         updateData,
+        show,
         clearPin,
-        onResize,
-        isInitialized,
-        renderGlobeOverlay
+        isInitialized: isGlobeInitialized,
+        onResize
     };
 })();

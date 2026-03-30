@@ -2,7 +2,7 @@
 # Author: Christos Kostogiannis
 
 from flask import Flask, render_template, jsonify
-from skyfield.api import load, wgs84, EarthSatellite
+from skyfield.api import load, wgs84
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import math
@@ -23,10 +23,6 @@ ISS_TLE_FILE = "data/iss.tle"
 
 TARGET_NOAA_SATELLITES = {"NOAA 15", "NOAA 18", "NOAA 19"}
 
-ISS_NAME = "ISS (ZARYA)"
-ISS_TLE_LINE1 = "1 25544U 98067A   26088.13514873  .00014242  00000-0  25817-3 0  9995"
-ISS_TLE_LINE2 = "2 25544  51.6395  14.4011 0003589 233.7545 126.3463 15.50059299510205"
-
 OBSERVER_LAT = 37.9838
 OBSERVER_LON = 23.7275
 OBSERVER_ELEV_M = 70
@@ -36,11 +32,11 @@ PAST_SEARCH_HOURS = 12
 FUTURE_SEARCH_HOURS = 36
 MAX_UPCOMING_PASSES = 5
 
-TRACK_MINUTES_BEFORE = 25
-TRACK_MINUTES_AFTER = 25
+TRACK_MINUTES_BEFORE = 30
+TRACK_MINUTES_AFTER = 30
 TRACK_STEP_SECONDS = 30
 MAP_REFRESH_SECONDS = 5
-TLE_CACHE_MINUTES = 30
+TLE_CACHE_MINUTES = 10
 
 # Response/data cache timings
 MAP_DATA_CACHE_SECONDS = 4
@@ -116,10 +112,6 @@ def format_eta_from_seconds(seconds):
 
 def get_observer():
     return observer
-
-
-def get_hardcoded_iss_satellite():
-    return EarthSatellite(ISS_TLE_LINE1, ISS_TLE_LINE2, ISS_NAME, ts)
 
 
 def download_tle_file(url, file_path):
@@ -217,27 +209,28 @@ def load_iss_satellite():
         and _iss_cache["loaded_at"] is not None
         and now_utc - _iss_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
     ):
+        print("🛰️ ISS source: memory cache")
         return _iss_cache["satellite"]
 
     iss_satellite = None
 
     try:
         download_tle_file(ISS_TLE_URL, ISS_TLE_FILE)
-        print("✅ ISS TLE updated from internet")
+        print(f"🛰️ ISS source: internet -> saved to {ISS_TLE_FILE}")
     except Exception as e:
         print(f"⚠️ Failed to download ISS TLE, using local fallback: {e}")
 
     iss_satellite = load_iss_satellite_from_local_file()
 
-    if iss_satellite is None:
-        print("⚠️ No valid local ISS TLE file found, using hardcoded ISS fallback")
-        iss_satellite = get_hardcoded_iss_satellite()
+    if iss_satellite is not None:
+        print("🛰️ ISS source: local file")
+    else:
+        raise RuntimeError("No valid ISS TLE available: internet failed and local fallback is missing/invalid.")
 
     _iss_cache["satellite"] = iss_satellite
     _iss_cache["loaded_at"] = now_utc
 
     return iss_satellite
-
 
 def calculate_passes(start_utc, end_utc, satellites):
     obs = get_observer()

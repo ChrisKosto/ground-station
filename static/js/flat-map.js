@@ -15,7 +15,6 @@ window.FlatMapModule = (() => {
     let animationFrameId = null;
     let lastMapPayloadTime = performance.now();
     let pinnedSatelliteName = null;
-    let globalClickHandlerInstalled = false;
 
     let stateRef = null;
 
@@ -24,23 +23,16 @@ window.FlatMapModule = (() => {
     }
 
     function getSatelliteColors() {
-        return stateRef?.satelliteColors || {};
+        return stateRef.satelliteColors;
     }
 
     function getGroundStation() {
-        return stateRef?.groundStation || { lat: 0, lon: 0, name: "Ground Station" };
-    }
-
-    function getSatelliteNamesFromState() {
-        return new Set((stateRef?.satelliteMapData || []).map(s => s.name));
+        return stateRef.groundStation;
     }
 
     function init(containerId) {
-        if (map) return;
-
         map = L.map(containerId, {
-            worldCopyJump: true,
-            preferCanvas: true
+            worldCopyJump: true
         }).setView([20, 0], 2);
 
         L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
@@ -48,14 +40,12 @@ window.FlatMapModule = (() => {
         }).addTo(map);
 
         addGroundStationMarker();
-        initializeSatelliteLayers(stateRef?.satelliteMapData || []);
+        initializeSatelliteLayers(stateRef.satelliteMapData);
         installGlobalClickToClose();
         startMapAnimationLoop();
     }
 
     function addGroundStationMarker() {
-        const station = getGroundStation();
-
         const icon = L.divIcon({
             className: "",
             html: `
@@ -69,17 +59,17 @@ window.FlatMapModule = (() => {
             iconAnchor: [13, 13]
         });
 
-        groundStationMarker = L.marker([station.lat, station.lon], {
+        groundStationMarker = L.marker([getGroundStation().lat, getGroundStation().lon], {
             icon: icon,
             zIndexOffset: 1000
         }).addTo(map);
 
-        groundStationMarker.bindPopup(buildGroundStationHtml(station), {
+        groundStationMarker.bindPopup(buildGroundStationHtml(getGroundStation()), {
             autoClose: false,
             closeOnClick: false
         });
 
-        groundStationHalo = L.circleMarker([station.lat, station.lon], {
+        groundStationHalo = L.circleMarker([getGroundStation().lat, getGroundStation().lon], {
             radius: 14,
             color: "#00d4ff",
             weight: 1.5,
@@ -91,34 +81,23 @@ window.FlatMapModule = (() => {
     }
 
     function showSatelliteFootprint(sat) {
-        if (!sat || !map || !sat.current) return;
+        if (!sat || !map) return;
 
-        const radiusMeters = Math.max(0, (sat.footprint_radius_km || 0) * 1000);
-        const color = getSatelliteColors()[sat.name] || "#00d4ff";
+        hideSatelliteFootprint();
 
-        if (!activeFootprintCircle) {
-            activeFootprintCircle = L.circle([sat.current.lat, sat.current.lon], {
-                radius: radiusMeters,
-                color: color,
-                weight: 1.2,
-                opacity: 0.22,
-                fillColor: color,
-                fillOpacity: 0.035,
-                interactive: false
-            }).addTo(map);
-            return;
-        }
-
-        activeFootprintCircle.setLatLng([sat.current.lat, sat.current.lon]);
-        activeFootprintCircle.setRadius(radiusMeters);
-        activeFootprintCircle.setStyle({
-            color: color,
-            fillColor: color
-        });
+        activeFootprintCircle = L.circle([sat.current.lat, sat.current.lon], {
+            radius: (sat.footprint_radius_km || 0) * 1000,
+            color: getSatelliteColors()[sat.name] || "#00d4ff",
+            weight: 1.2,
+            opacity: 0.22,
+            fillColor: getSatelliteColors()[sat.name] || "#00d4ff",
+            fillOpacity: 0.035,
+            interactive: false
+        }).addTo(map);
     }
 
     function hideSatelliteFootprint() {
-        if (activeFootprintCircle && map) {
+        if (activeFootprintCircle) {
             map.removeLayer(activeFootprintCircle);
             activeFootprintCircle = null;
         }
@@ -132,7 +111,10 @@ window.FlatMapModule = (() => {
             obj.marker.closePopup();
             obj.isPinned = false;
             obj.isHovering = false;
-            applyMarkerStyle(obj, false);
+            obj.marker.setStyle({
+                radius: obj.baseRadius,
+                weight: obj.baseWeight
+            });
         }
 
         pinnedSatelliteName = null;
@@ -149,14 +131,11 @@ window.FlatMapModule = (() => {
 
         pinnedSatelliteName = satName;
         obj.isPinned = true;
-        syncInfoContentForObject(obj);
         obj.marker.openPopup();
         showSatelliteFootprint(obj.tooltipData);
     }
 
     function installGlobalClickToClose() {
-        if (globalClickHandlerInstalled) return;
-
         document.addEventListener("click", function (event) {
             const clickedMarker = event.target.closest(".leaflet-interactive");
             const clickedTooltip = event.target.closest(".leaflet-tooltip");
@@ -175,20 +154,9 @@ window.FlatMapModule = (() => {
                 groundStationMarker.closePopup();
             }
 
-            if (stateRef && typeof stateRef.clearGlobePin === "function") {
+            if (stateRef && stateRef.clearGlobePin) {
                 stateRef.clearGlobePin();
             }
-        });
-
-        globalClickHandlerInstalled = true;
-    }
-
-    function applyMarkerStyle(obj, isHovering) {
-        if (!obj || !obj.marker) return;
-
-        obj.marker.setStyle({
-            radius: isHovering ? obj.hoverRadius : obj.baseRadius,
-            weight: isHovering ? obj.hoverWeight : obj.baseWeight
         });
     }
 
@@ -197,10 +165,13 @@ window.FlatMapModule = (() => {
         if (!obj) return;
 
         obj.isHovering = true;
-        applyMarkerStyle(obj, true);
+
+        obj.marker.setStyle({
+            radius: obj.hoverRadius,
+            weight: obj.hoverWeight
+        });
 
         if (!obj.isPinned) {
-            syncInfoContentForObject(obj);
             obj.marker.openTooltip();
             showSatelliteFootprint(obj.tooltipData);
         }
@@ -211,32 +182,16 @@ window.FlatMapModule = (() => {
         if (!obj) return;
 
         obj.isHovering = false;
-        applyMarkerStyle(obj, false);
+
+        obj.marker.setStyle({
+            radius: obj.baseRadius,
+            weight: obj.baseWeight
+        });
 
         if (!obj.isPinned) {
             obj.marker.closeTooltip();
             hideSatelliteFootprint();
         }
-    }
-
-    function buildMarkerOptions(color, isIss, baseRadius, baseWeight) {
-        return {
-            radius: baseRadius,
-            color: color,
-            fillColor: color,
-            fillOpacity: isIss ? 1 : 0.95,
-            weight: baseWeight,
-            bubblingMouseEvents: false
-        };
-    }
-
-    function buildTrackPolyline(segment, color, isIss) {
-        return L.polyline(segment, {
-            color: color,
-            weight: isIss ? 3.5 : 3,
-            opacity: isIss ? 0.95 : 0.82,
-            interactive: false
-        }).addTo(map);
     }
 
     function createSatelliteLayer(sat) {
@@ -248,14 +203,16 @@ window.FlatMapModule = (() => {
         const baseWeight = 2;
         const hoverWeight = 2.8;
 
-        const marker = L.circleMarker(
-            [sat.current.lat, sat.current.lon],
-            buildMarkerOptions(color, isIss, baseRadius, baseWeight)
-        ).addTo(map);
+        const marker = L.circleMarker([sat.current.lat, sat.current.lon], {
+            radius: baseRadius,
+            color: color,
+            fillColor: color,
+            fillOpacity: 0.95,
+            weight: baseWeight,
+            bubblingMouseEvents: false
+        }).addTo(map);
 
-        const initialInfoHtml = buildInfoHtml(sat);
-
-        marker.bindTooltip(initialInfoHtml, {
+        marker.bindTooltip(buildInfoHtml(sat), {
             direction: "top",
             offset: [0, -12],
             sticky: false,
@@ -264,7 +221,7 @@ window.FlatMapModule = (() => {
             opacity: 1
         });
 
-        marker.bindPopup(initialInfoHtml, {
+        marker.bindPopup(buildInfoHtml(sat), {
             autoClose: false,
             closeOnClick: false,
             autoPan: true
@@ -284,7 +241,14 @@ window.FlatMapModule = (() => {
         });
 
         const trackSegments = splitTrackAtDateline(sat.track || []);
-        const polylines = trackSegments.map(segment => buildTrackPolyline(segment, color, isIss));
+        const polylines = trackSegments.map(segment =>
+            L.polyline(segment, {
+                color: color,
+                weight: isIss ? 3.5 : 3,
+                opacity: isIss ? 0.95 : 0.82,
+                interactive: false
+            }).addTo(map)
+        );
 
         satelliteObjects[sat.name] = {
             marker,
@@ -298,43 +262,11 @@ window.FlatMapModule = (() => {
             tooltipData: sat,
             isPinned: false,
             isHovering: false,
-            isIss,
             baseRadius,
             hoverRadius,
             baseWeight,
-            hoverWeight,
-            lastInfoHtml: initialInfoHtml
+            hoverWeight
         };
-    }
-
-    function removeSatelliteLayer(satName) {
-        const obj = satelliteObjects[satName];
-        if (!obj || !map) return;
-
-        if (pinnedSatelliteName === satName) {
-            pinnedSatelliteName = null;
-            hideSatelliteFootprint();
-        }
-
-        if (obj.marker) {
-            map.removeLayer(obj.marker);
-        }
-
-        if (obj.polylines && obj.polylines.length) {
-            obj.polylines.forEach(polyline => map.removeLayer(polyline));
-        }
-
-        delete satelliteObjects[satName];
-    }
-
-    function pruneRemovedSatellites() {
-        const currentNames = getSatelliteNamesFromState();
-
-        for (const satName in satelliteObjects) {
-            if (!currentNames.has(satName)) {
-                removeSatelliteLayer(satName);
-            }
-        }
     }
 
     function initializeSatelliteLayers(satellites) {
@@ -345,41 +277,30 @@ window.FlatMapModule = (() => {
         }
     }
 
-    function ensurePolylineCount(obj, requiredCount, color, isIss) {
-        while (obj.polylines.length < requiredCount) {
-            obj.polylines.push(buildTrackPolyline([], color, isIss));
-        }
-
-        while (obj.polylines.length > requiredCount) {
-            const polyline = obj.polylines.pop();
-            map.removeLayer(polyline);
-        }
-    }
-
     function updateSatelliteTracks(sat) {
         const obj = satelliteObjects[sat.name];
         if (!obj) return;
 
-        const color = getSatelliteColors()[sat.name] || "#00d4ff";
         const trackSegments = splitTrackAtDateline(sat.track || []);
 
-        ensurePolylineCount(obj, trackSegments.length, color, obj.isIss);
-
-        for (let i = 0; i < trackSegments.length; i++) {
-            obj.polylines[i].setLatLngs(trackSegments[i]);
+        while (obj.polylines.length < trackSegments.length) {
+            const color = getSatelliteColors()[sat.name] || "#00d4ff";
+            const polyline = L.polyline([], {
+                color: color,
+                weight: sat.name === "ISS (ZARYA)" ? 3.5 : 3,
+                opacity: sat.name === "ISS (ZARYA)" ? 0.95 : 0.82,
+                interactive: false
+            }).addTo(map);
+            obj.polylines.push(polyline);
         }
-    }
 
-    function syncInfoContentForObject(obj) {
-        if (!obj || !obj.tooltipData) return;
-
-        const nextHtml = buildInfoHtml(obj.tooltipData);
-
-        if (nextHtml === obj.lastInfoHtml) return;
-
-        obj.lastInfoHtml = nextHtml;
-        obj.marker.setTooltipContent(nextHtml);
-        obj.marker.setPopupContent(nextHtml);
+        for (let i = 0; i < obj.polylines.length; i++) {
+            if (i < trackSegments.length) {
+                obj.polylines[i].setLatLngs(trackSegments[i]);
+            } else {
+                obj.polylines[i].setLatLngs([]);
+            }
+        }
     }
 
     function updateSatelliteTarget(sat) {
@@ -392,7 +313,8 @@ window.FlatMapModule = (() => {
         obj.targetLon = sat.current.lon;
         obj.tooltipData = sat;
 
-        syncInfoContentForObject(obj);
+        obj.marker.setTooltipContent(buildInfoHtml(sat));
+        obj.marker.setPopupContent(buildInfoHtml(sat));
         updateSatelliteTracks(sat);
 
         if (obj.isPinned) {
@@ -402,7 +324,6 @@ window.FlatMapModule = (() => {
     }
 
     function syncSatelliteLayers(satellites) {
-        pruneRemovedSatellites();
         initializeSatelliteLayers(satellites);
 
         for (const sat of satellites) {
@@ -410,37 +331,24 @@ window.FlatMapModule = (() => {
         }
     }
 
-    function animateMarkers(t) {
-        for (const satName in satelliteObjects) {
-            const obj = satelliteObjects[satName];
-
-            const lat = obj.fromLat + (obj.targetLat - obj.fromLat) * t;
-            const lon = interpolateLon(obj.fromLon, obj.targetLon, t);
-
-            obj.displayLat = lat;
-            obj.displayLon = lon;
-
-            obj.marker.setLatLng([lat, lon]);
-        }
-
-        if (activeFootprintCircle && pinnedSatelliteName) {
-            const pinnedObj = satelliteObjects[pinnedSatelliteName];
-            if (pinnedObj && pinnedObj.tooltipData) {
-                activeFootprintCircle.setLatLng([
-                    pinnedObj.displayLat,
-                    pinnedObj.displayLon
-                ]);
-            }
-        }
-    }
-
     function startMapAnimationLoop() {
         function animate() {
             const now = performance.now();
-            const durationMs = Math.max(250, (stateRef?.mapRefreshSeconds || 5) * 1000);
+            const durationMs = stateRef.mapRefreshSeconds * 1000;
             const t = Math.min((now - lastMapPayloadTime) / durationMs, 1);
 
-            animateMarkers(t);
+            for (const satName in satelliteObjects) {
+                const obj = satelliteObjects[satName];
+
+                const lat = obj.fromLat + (obj.targetLat - obj.fromLat) * t;
+                const lon = interpolateLon(obj.fromLon, obj.targetLon, t);
+
+                obj.displayLat = lat;
+                obj.displayLon = lon;
+
+                obj.marker.setLatLng([lat, lon]);
+            }
+
             animationFrameId = requestAnimationFrame(animate);
         }
 
@@ -456,13 +364,8 @@ window.FlatMapModule = (() => {
             const obj = satelliteObjects[satName];
             if (!obj || !obj.tooltipData) continue;
 
-            const nextHtml = buildInfoHtml(obj.tooltipData);
-
-            if (nextHtml !== obj.lastInfoHtml) {
-                obj.lastInfoHtml = nextHtml;
-                obj.marker.setTooltipContent(nextHtml);
-                obj.marker.setPopupContent(nextHtml);
-            }
+            obj.marker.setTooltipContent(buildInfoHtml(obj.tooltipData));
+            obj.marker.setPopupContent(buildInfoHtml(obj.tooltipData));
 
             if (obj.isPinned) {
                 obj.marker.openPopup();
@@ -473,41 +376,11 @@ window.FlatMapModule = (() => {
 
     function onMapDataUpdated() {
         lastMapPayloadTime = performance.now();
-        syncSatelliteLayers(stateRef?.satelliteMapData || []);
+        syncSatelliteLayers(stateRef.satelliteMapData);
     }
 
     function invalidateSize() {
-        if (map) {
-            map.invalidateSize();
-        }
-    }
-
-    function destroy() {
-        if (animationFrameId) {
-            cancelAnimationFrame(animationFrameId);
-            animationFrameId = null;
-        }
-
-        closePinnedPopup();
-
-        for (const satName in satelliteObjects) {
-            removeSatelliteLayer(satName);
-        }
-
-        if (groundStationHalo && map) {
-            map.removeLayer(groundStationHalo);
-            groundStationHalo = null;
-        }
-
-        if (groundStationMarker && map) {
-            map.removeLayer(groundStationMarker);
-            groundStationMarker = null;
-        }
-
-        if (map) {
-            map.remove();
-            map = null;
-        }
+        if (map) map.invalidateSize();
     }
 
     return {
@@ -516,7 +389,6 @@ window.FlatMapModule = (() => {
         refreshOpenInfoContent,
         onMapDataUpdated,
         invalidateSize,
-        closePinnedPopup,
-        destroy
+        closePinnedPopup
     };
 })();

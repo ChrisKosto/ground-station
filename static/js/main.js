@@ -2,18 +2,12 @@
     const state = {
         nextPassIso: window.APP_DATA.nextPassIso,
         satelliteMapData: window.APP_DATA.satelliteMapData,
-        mapRefreshSeconds: Number(window.APP_DATA.mapRefreshSeconds) || 5,
+        mapRefreshSeconds: window.APP_DATA.mapRefreshSeconds,
         dashboardData: window.APP_DATA.initialDashboardData,
         groundStation: window.APP_DATA.groundStation,
         satelliteColors: window.APP_DATA.satelliteColors,
         currentView: "flat",
-        clearGlobePin: null,
-        mapRefreshTimerId: null,
-        passesRefreshTimerId: null,
-        countdownTimerId: null,
-        infoRefreshTimerId: null,
-        isFetchingMap: false,
-        isFetchingPasses: false
+        clearGlobePin: null
     };
 
     window.FlatMapModule.setStateRef(state);
@@ -22,27 +16,6 @@
     state.clearGlobePin = () => {
         window.GlobeModule.clearPin();
     };
-
-    function getStatusEl() {
-        return document.getElementById("system-status");
-    }
-
-    function showStatus(message, type = "info") {
-        const el = getStatusEl();
-        if (!el) return;
-
-        el.textContent = message;
-        el.className = `system-status ${type}`;
-        el.classList.remove("hidden");
-    }
-
-    function hideStatus() {
-        const el = getStatusEl();
-        if (!el) return;
-
-        el.textContent = "";
-        el.className = "system-status hidden";
-    }
 
     function updateCountdown() {
         const countdownEl = document.getElementById("countdown");
@@ -124,54 +97,24 @@
         }
     }
 
-    async function fetchJson(url) {
-        const response = await fetch(url, {
-            method: "GET",
-            headers: {
-                "Accept": "application/json"
-            },
-            cache: "no-store"
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status} for ${url}`);
-        }
-
-        return response.json();
-    }
-
     async function fetchPasses() {
-        if (state.isFetchingPasses) return;
-        state.isFetchingPasses = true;
-
         try {
-            const data = await fetchJson("/api/passes");
+            const response = await fetch("/api/passes");
+            const data = await response.json();
             state.dashboardData = data;
             updateDashboard(data);
-            hideStatus();
         } catch (error) {
             console.error("Error fetching pass data:", error);
-            showStatus("Σφάλμα ανανέωσης δεδομένων passes.", "error");
-        } finally {
-            state.isFetchingPasses = false;
         }
     }
 
     async function fetchMapOnly() {
-        if (state.isFetchingMap) return;
-        state.isFetchingMap = true;
-
         try {
-            const data = await fetchJson("/api/map");
+            const response = await fetch("/api/map");
+            const data = await response.json();
 
-            if (typeof data.map_refresh_seconds === "number" && data.map_refresh_seconds > 0) {
-                const nextRefresh = data.map_refresh_seconds;
-
-                if (nextRefresh !== state.mapRefreshSeconds) {
-                    state.mapRefreshSeconds = nextRefresh;
-                    restartMapRefreshLoop();
-                }
-
+            if (typeof data.map_refresh_seconds === "number") {
+                state.mapRefreshSeconds = data.map_refresh_seconds;
                 document.getElementById("map-refresh-note").textContent =
                     `Ο χάρτης ανανεώνεται κάθε ${state.mapRefreshSeconds} δευτερόλεπτα`;
             }
@@ -179,53 +122,15 @@
             state.satelliteMapData = data.satellite_map || [];
             window.FlatMapModule.onMapDataUpdated();
             window.GlobeModule.updateData();
-            hideStatus();
         } catch (error) {
             console.error("Error fetching map data:", error);
-            showStatus("Σφάλμα ανανέωσης χάρτη.", "error");
-        } finally {
-            state.isFetchingMap = false;
         }
     }
 
     function startInfoRefreshLoop() {
-        if (state.infoRefreshTimerId) {
-            clearInterval(state.infoRefreshTimerId);
-        }
-
-        state.infoRefreshTimerId = setInterval(() => {
+        setInterval(() => {
             window.FlatMapModule.refreshOpenInfoContent();
             window.GlobeModule.renderGlobeOverlay();
-        }, 1000);
-    }
-
-    function restartMapRefreshLoop() {
-        if (state.mapRefreshTimerId) {
-            clearInterval(state.mapRefreshTimerId);
-        }
-
-        state.mapRefreshTimerId = setInterval(() => {
-            fetchMapOnly();
-        }, state.mapRefreshSeconds * 1000);
-    }
-
-    function startPassesRefreshLoop() {
-        if (state.passesRefreshTimerId) {
-            clearInterval(state.passesRefreshTimerId);
-        }
-
-        state.passesRefreshTimerId = setInterval(() => {
-            fetchPasses();
-        }, 60000);
-    }
-
-    function startCountdownLoop() {
-        if (state.countdownTimerId) {
-            clearInterval(state.countdownTimerId);
-        }
-
-        state.countdownTimerId = setInterval(() => {
-            updateCountdown();
         }, 1000);
     }
 
@@ -233,9 +138,6 @@
         window.FlatMapModule.init("satellite-map");
         updateCountdown();
         startInfoRefreshLoop();
-        startCountdownLoop();
-        restartMapRefreshLoop();
-        startPassesRefreshLoop();
 
         document.getElementById("flat-view-btn").addEventListener("click", () => switchView("flat"));
         document.getElementById("globe-view-btn").addEventListener("click", () => switchView("globe"));
@@ -247,6 +149,10 @@
                 window.GlobeModule.onResize();
             }
         });
+
+        setInterval(updateCountdown, 1000);
+        setInterval(fetchMapOnly, state.mapRefreshSeconds * 1000);
+        setInterval(fetchPasses, 60000);
     }
 
     init();

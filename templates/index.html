@@ -135,6 +135,14 @@
             <div class="refresh-note" id="map-refresh-note">
                 Ο χάρτης ανανεώνεται κάθε {{ data.map_refresh_seconds }} δευτερόλεπτα
             </div>
+<div class="tle-status-row">
+    <span class="tle-badge {% if data.tle_status.noaa.stale %}tle-badge-stale{% endif %}">
+        NOAA TLE · {{ data.tle_status.noaa.updated_age }} · {{ data.tle_status.noaa.source }}
+    </span>
+    <span class="tle-badge {% if data.tle_status.iss.stale %}tle-badge-stale{% endif %}">
+        ISS TLE · {{ data.tle_status.iss.updated_age }} · {{ data.tle_status.iss.source }}
+    </span>
+</div>
         </div>
     </div>
 

@@ -49,12 +49,16 @@ ts = load.timescale()
 
 _noaa_cache = {
     "satellites": None,
-    "loaded_at": None
+    "loaded_at": None,
+    "source": None,
+    "file_updated_at": None
 }
 
 _iss_cache = {
     "satellite": None,
-    "loaded_at": None
+    "loaded_at": None,
+    "source": None,
+    "file_updated_at": None
 }
 
 
@@ -91,9 +95,96 @@ def format_eta_from_seconds(seconds):
 def get_observer():
     return wgs84.latlon(OBSERVER_LAT, OBSERVER_LON, elevation_m=OBSERVER_ELEV_M)
 
+def format_relative_age(dt):
+    if dt is None:
+        return "unknown"
+
+    now_utc = datetime.now(timezone.utc)
+    seconds = int((now_utc - dt).total_seconds())
+
+    if seconds < 60:
+        return "just now"
+
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min ago"
+
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+
+    days = hours // 24
+    return f"{days}d ago"
+
+
+def get_file_updated_at(file_path):
+    if not os.path.exists(file_path):
+        return None
+    return datetime.fromtimestamp(os.path.getmtime(file_path), tz=timezone.utc)
+
+
+def build_tle_status(label, cache_obj):
+    file_updated_at = cache_obj.get("file_updated_at")
+    source = cache_obj.get("source") or "unknown"
+
+    age_text = format_relative_age(file_updated_at)
+
+    stale = False
+    if file_updated_at is not None:
+        stale = (datetime.now(timezone.utc) - file_updated_at) > timedelta(hours=12)
+
+    return {
+        "label": label,
+        "source": source,
+        "updated_at_iso": file_updated_at.isoformat() if file_updated_at else None,
+        "updated_age": age_text,
+        "stale": stale
+    }
+
 
 def load_iss_satellite():
     now_utc = datetime.now(timezone.utc)
+
+    if (
+        _iss_cache["satellite"] is not None
+        and _iss_cache["loaded_at"] is not None
+        and now_utc - _iss_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
+    ):
+        _iss_cache["source"] = "memory cache"
+        return _iss_cache["satellite"]
+
+    downloaded_ok = False
+
+    try:
+        download_tle_file(ISS_TLE_URL, ISS_TLE_FILE)
+        downloaded_ok = True
+        print("✅ ISS TLE updated from internet")
+    except Exception as e:
+        print(f"⚠️ Failed to download ISS TLE, using local file: {e}")
+
+    if not os.path.exists(ISS_TLE_FILE) or os.path.getsize(ISS_TLE_FILE) == 0:
+        raise RuntimeError("No valid ISS TLE available: internet download failed and local file is missing/empty.")
+
+    satellites = load.tle_file(ISS_TLE_FILE)
+
+    if not downloaded_ok:
+        print("✅ ISS TLE loaded from local cache")
+
+    iss_satellite = None
+    for sat in satellites:
+        if sat.name == ISS_NAME or "ISS" in sat.name:
+            iss_satellite = sat
+            break
+
+    if iss_satellite is None:
+        raise RuntimeError("ISS not found in TLE data.")
+
+    _iss_cache["satellite"] = iss_satellite
+    _iss_cache["loaded_at"] = now_utc
+    _iss_cache["source"] = "internet" if downloaded_ok else "local fallback"
+    _iss_cache["file_updated_at"] = get_file_updated_at(ISS_TLE_FILE)
+
+    return iss_satellite
 
     if (
         _iss_cache["satellite"] is not None
@@ -163,6 +254,7 @@ def load_noaa_satellites():
         and _noaa_cache["loaded_at"] is not None
         and now_utc - _noaa_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
     ):
+        _noaa_cache["source"] = "memory cache"
         return _noaa_cache["satellites"]
 
     downloaded_ok = False
@@ -189,6 +281,8 @@ def load_noaa_satellites():
 
     _noaa_cache["satellites"] = satellites
     _noaa_cache["loaded_at"] = now_utc
+    _noaa_cache["source"] = "internet" if downloaded_ok else "local fallback"
+    _noaa_cache["file_updated_at"] = get_file_updated_at(NOAA_TLE_FILE)
 
     return satellites
 
@@ -448,12 +542,16 @@ def get_dashboard_data():
     upcoming_noaa_passes = upcoming_noaa_passes[:MAX_UPCOMING_PASSES]
 
     return {
-        "last_pass": get_last_pass_data(past_passes),
-        "next_pass": get_next_pass_data(upcoming_noaa_passes),
-        "upcoming_passes": upcoming_noaa_passes,
-        "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc),
-        "map_refresh_seconds": MAP_REFRESH_SECONDS
+    "last_pass": get_last_pass_data(past_passes),
+    "next_pass": get_next_pass_data(upcoming_noaa_passes),
+    "upcoming_passes": upcoming_noaa_passes,
+    "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc),
+    "map_refresh_seconds": MAP_REFRESH_SECONDS,
+    "tle_status": {
+        "noaa": build_tle_status("NOAA", _noaa_cache),
+        "iss": build_tle_status("ISS", _iss_cache)
     }
+}
 
 
 @app.route("/")

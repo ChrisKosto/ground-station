@@ -420,3 +420,26 @@ tbody tr:hover {
         min-width: unset;
     }
 }
+.tle-status-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-top: 8px;
+}
+
+.tle-badge {
+    font-size: 0.78em;
+    color: var(--muted);
+    background: rgba(16, 22, 29, 0.55);
+    border: 1px solid rgba(48, 54, 61, 0.7);
+    border-radius: 999px;
+    padding: 4px 10px;
+    opacity: 0.9;
+}
+
+.tle-badge-stale {
+    color: #fde68a;
+    border-color: rgba(255, 202, 40, 0.45);
+    background: rgba(255, 202, 40, 0.08);
+}

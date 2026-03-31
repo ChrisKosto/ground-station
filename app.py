@@ -2,7 +2,7 @@
 # Author: Christos Kostogiannis
 
 from flask import Flask, render_template, jsonify
-from skyfield.api import load, wgs84, EarthSatellite
+from skyfield.api import load, wgs84
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import os
@@ -19,9 +19,9 @@ NOAA_TLE_FILE = "data/noaa.tle"
 
 TARGET_NOAA_SATELLITES = {"NOAA 15", "NOAA 18", "NOAA 19"}
 
+ISS_TLE_URL = "https://celestrak.org/NORAD/elements/stations.txt"
+ISS_TLE_FILE = "data/iss.tle"
 ISS_NAME = "ISS (ZARYA)"
-ISS_TLE_LINE1 = "1 25544U 98067A   26088.13514873  .00014242  00000-0  25817-3 0  9995"
-ISS_TLE_LINE2 = "2 25544  51.6395  14.4011 0003589 233.7545 126.3463 15.50059299510205"
 
 OBSERVER_LAT = 37.9838
 OBSERVER_LON = 23.7275
@@ -49,6 +49,11 @@ ts = load.timescale()
 
 _noaa_cache = {
     "satellites": None,
+    "loaded_at": None
+}
+
+_iss_cache = {
+    "satellite": None,
     "loaded_at": None
 }
 
@@ -87,9 +92,46 @@ def get_observer():
     return wgs84.latlon(OBSERVER_LAT, OBSERVER_LON, elevation_m=OBSERVER_ELEV_M)
 
 
-def get_iss_satellite():
-    return EarthSatellite(ISS_TLE_LINE1, ISS_TLE_LINE2, ISS_NAME, ts)
+def load_iss_satellite():
+    now_utc = datetime.now(timezone.utc)
 
+    if (
+        _iss_cache["satellite"] is not None
+        and _iss_cache["loaded_at"] is not None
+        and now_utc - _iss_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
+    ):
+        return _iss_cache["satellite"]
+
+    downloaded_ok = False
+
+    try:
+        download_tle_file(ISS_TLE_URL, ISS_TLE_FILE)
+        downloaded_ok = True
+        print("✅ ISS TLE updated from internet")
+    except Exception as e:
+        print(f"⚠️ Failed to download ISS TLE, using local file: {e}")
+
+    if not os.path.exists(ISS_TLE_FILE) or os.path.getsize(ISS_TLE_FILE) == 0:
+        raise RuntimeError("No valid ISS TLE available: internet download failed and local file is missing/empty.")
+
+    satellites = load.tle_file(ISS_TLE_FILE)
+
+    if not downloaded_ok:
+        print("✅ ISS TLE loaded from local cache")
+
+    iss_satellite = None
+    for sat in satellites:
+        if sat.name == ISS_NAME or "ISS" in sat.name:
+            iss_satellite = sat
+            break
+
+    if iss_satellite is None:
+        raise RuntimeError("ISS not found in TLE data.")
+
+    _iss_cache["satellite"] = iss_satellite
+    _iss_cache["loaded_at"] = now_utc
+
+    return iss_satellite
 
 def download_tle_file(url, file_path):
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -380,7 +422,7 @@ def get_dashboard_data():
     now_utc = datetime.now(timezone.utc)
 
     noaa_satellites = load_noaa_satellites()
-    iss_satellite = get_iss_satellite()
+    iss_satellite = load_iss_satellite()
 
     tracked_satellites = noaa_satellites + [iss_satellite]
 
@@ -431,7 +473,7 @@ def api_map():
     now_utc = datetime.now(timezone.utc)
 
     noaa_satellites = load_noaa_satellites()
-    iss_satellite = get_iss_satellite()
+    iss_satellite = load_iss_satellite()
     tracked_satellites = noaa_satellites + [iss_satellite]
 
     future_end_utc = now_utc + timedelta(hours=FUTURE_SEARCH_HOURS)

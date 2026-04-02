@@ -13,7 +13,6 @@ Live tracking of NOAA weather satellites and ISS.
 - Python (Flask)
 - Skyfield
 - JavaScript (Leaflet + Three.js)
-- Render deployment
 
 ## Live Demo
 https://ground-station-production.up.railway.app/

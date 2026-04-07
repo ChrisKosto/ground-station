@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import os
 import math
-import urllib.request
+import requests
 
 app = Flask(__name__)
 
@@ -36,7 +36,12 @@ TRACK_MINUTES_BEFORE = 25
 TRACK_MINUTES_AFTER = 25
 TRACK_STEP_SECONDS = 30
 MAP_REFRESH_SECONDS = 5
+
+# Αν το τελευταίο fetch ήταν επιτυχές από internet, κράτα cache για 30 λεπτά
 TLE_CACHE_MINUTES = 30
+
+# Αν το τελευταίο fetch απέτυχε και έπεσε σε fallback, ξαναδοκίμασε πιο γρήγορα
+TLE_RETRY_MINUTES_ON_FAILURE = 5
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -50,15 +55,19 @@ ts = load.timescale()
 _noaa_cache = {
     "satellites": None,
     "loaded_at": None,
-    "source": None,
-    "file_updated_at": None
+    "source": None,          # "internet" | "local fallback"
+    "file_updated_at": None,
+    "last_attempt_at": None,
+    "last_error": None
 }
 
 _iss_cache = {
     "satellite": None,
     "loaded_at": None,
-    "source": None,
-    "file_updated_at": None
+    "source": None,          # "internet" | "local fallback"
+    "file_updated_at": None,
+    "last_attempt_at": None,
+    "last_error": None
 }
 
 
@@ -94,6 +103,7 @@ def format_eta_from_seconds(seconds):
 
 def get_observer():
     return wgs84.latlon(OBSERVER_LAT, OBSERVER_LON, elevation_m=OBSERVER_ELEV_M)
+
 
 def format_relative_age(dt):
     if dt is None:
@@ -138,37 +148,74 @@ def build_tle_status(label, cache_obj):
         "source": source,
         "updated_at_iso": file_updated_at.isoformat() if file_updated_at else None,
         "updated_age": age_text,
-        "stale": stale
+        "stale": stale,
+        "last_error": cache_obj.get("last_error")
     }
+
+
+def should_use_cached_data(cache_obj, now_utc, is_list=False):
+    cached_value = cache_obj["satellites"] if is_list else cache_obj["satellite"]
+    loaded_at = cache_obj.get("loaded_at")
+    source = cache_obj.get("source")
+
+    if cached_value is None or loaded_at is None:
+        return False
+
+    cache_age = now_utc - loaded_at
+
+    if source == "internet":
+        return cache_age < timedelta(minutes=TLE_CACHE_MINUTES)
+
+    # Αν είμαστε σε local fallback, μην περιμένεις 30 λεπτά.
+    # Ξαναπροσπάθησε πιο γρήγορα να πιάσεις internet.
+    return cache_age < timedelta(minutes=TLE_RETRY_MINUTES_ON_FAILURE)
+
+
+def download_tle_file(url, file_path):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    print(f"⬇️ Downloading TLE from: {url}")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 GroundStation/1.0"
+    }
+
+    response = requests.get(url, headers=headers, timeout=15)
+    response.raise_for_status()
+
+    text = response.text.strip()
+
+    if not text:
+        raise RuntimeError("Downloaded TLE file is empty.")
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+    print(f"✅ TLE saved: {file_path}")
 
 
 def load_iss_satellite():
     now_utc = datetime.now(timezone.utc)
 
-    if (
-        _iss_cache["satellite"] is not None
-        and _iss_cache["loaded_at"] is not None
-        and now_utc - _iss_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
-    ):
-        _iss_cache["source"] = "memory cache"
+    if should_use_cached_data(_iss_cache, now_utc, is_list=False):
         return _iss_cache["satellite"]
 
+    _iss_cache["last_attempt_at"] = now_utc
     downloaded_ok = False
 
     try:
         download_tle_file(ISS_TLE_URL, ISS_TLE_FILE)
         downloaded_ok = True
+        _iss_cache["last_error"] = None
         print("✅ ISS TLE updated from internet")
     except Exception as e:
+        _iss_cache["last_error"] = str(e)
         print(f"⚠️ Failed to download ISS TLE, using local file: {e}")
 
     if not os.path.exists(ISS_TLE_FILE) or os.path.getsize(ISS_TLE_FILE) == 0:
         raise RuntimeError("No valid ISS TLE available: internet download failed and local file is missing/empty.")
 
     satellites = load.tle_file(ISS_TLE_FILE)
-
-    if not downloaded_ok:
-        print("✅ ISS TLE loaded from local cache")
 
     iss_satellite = None
     for sat in satellites:
@@ -178,6 +225,9 @@ def load_iss_satellite():
 
     if iss_satellite is None:
         raise RuntimeError("ISS not found in TLE data.")
+
+    if not downloaded_ok:
+        print("✅ ISS TLE loaded from local fallback")
 
     _iss_cache["satellite"] = iss_satellite
     _iss_cache["loaded_at"] = now_utc
@@ -186,98 +236,36 @@ def load_iss_satellite():
 
     return iss_satellite
 
-    if (
-        _iss_cache["satellite"] is not None
-        and _iss_cache["loaded_at"] is not None
-        and now_utc - _iss_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
-    ):
-        return _iss_cache["satellite"]
-
-    downloaded_ok = False
-
-    try:
-        download_tle_file(ISS_TLE_URL, ISS_TLE_FILE)
-        downloaded_ok = True
-        print("✅ ISS TLE updated from internet")
-    except Exception as e:
-        print(f"⚠️ Failed to download ISS TLE, using local file: {e}")
-
-    if not os.path.exists(ISS_TLE_FILE) or os.path.getsize(ISS_TLE_FILE) == 0:
-        raise RuntimeError("No valid ISS TLE available: internet download failed and local file is missing/empty.")
-
-    satellites = load.tle_file(ISS_TLE_FILE)
-
-    if not downloaded_ok:
-        print("✅ ISS TLE loaded from local cache")
-
-    iss_satellite = None
-    for sat in satellites:
-        if sat.name == ISS_NAME or "ISS" in sat.name:
-            iss_satellite = sat
-            break
-
-    if iss_satellite is None:
-        raise RuntimeError("ISS not found in TLE data.")
-
-    _iss_cache["satellite"] = iss_satellite
-    _iss_cache["loaded_at"] = now_utc
-
-    return iss_satellite
-
-def download_tle_file(url, file_path):
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 GroundStation/1.0"
-        }
-    )
-
-    with urllib.request.urlopen(request, timeout=15) as response:
-        raw_data = response.read()
-
-    text = raw_data.decode("utf-8").strip()
-
-    if not text:
-        raise RuntimeError("Downloaded TLE file is empty.")
-
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(text + "\n")
-
 
 def load_noaa_satellites():
     now_utc = datetime.now(timezone.utc)
 
-    if (
-        _noaa_cache["satellites"] is not None
-        and _noaa_cache["loaded_at"] is not None
-        and now_utc - _noaa_cache["loaded_at"] < timedelta(minutes=TLE_CACHE_MINUTES)
-    ):
-        _noaa_cache["source"] = "memory cache"
+    if should_use_cached_data(_noaa_cache, now_utc, is_list=True):
         return _noaa_cache["satellites"]
 
+    _noaa_cache["last_attempt_at"] = now_utc
     downloaded_ok = False
 
     try:
         download_tle_file(NOAA_TLE_URL, NOAA_TLE_FILE)
         downloaded_ok = True
+        _noaa_cache["last_error"] = None
         print("✅ NOAA TLE updated from internet")
     except Exception as e:
+        _noaa_cache["last_error"] = str(e)
         print(f"⚠️ Failed to download NOAA TLE, using local file: {e}")
 
     if not os.path.exists(NOAA_TLE_FILE) or os.path.getsize(NOAA_TLE_FILE) == 0:
         raise RuntimeError("No valid NOAA TLE available: internet download failed and local file is missing/empty.")
 
     satellites = load.tle_file(NOAA_TLE_FILE)
-
-    if not downloaded_ok:
-        print("✅ NOAA TLE loaded from local cache")
-
     satellites = [sat for sat in satellites if sat.name in TARGET_NOAA_SATELLITES]
 
     if not satellites:
         raise RuntimeError("No target NOAA satellites found in TLE data.")
+
+    if not downloaded_ok:
+        print("✅ NOAA TLE loaded from local fallback")
 
     _noaa_cache["satellites"] = satellites
     _noaa_cache["loaded_at"] = now_utc
@@ -542,16 +530,16 @@ def get_dashboard_data():
     upcoming_noaa_passes = upcoming_noaa_passes[:MAX_UPCOMING_PASSES]
 
     return {
-    "last_pass": get_last_pass_data(past_passes),
-    "next_pass": get_next_pass_data(upcoming_noaa_passes),
-    "upcoming_passes": upcoming_noaa_passes,
-    "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc),
-    "map_refresh_seconds": MAP_REFRESH_SECONDS,
-    "tle_status": {
-        "noaa": build_tle_status("NOAA", _noaa_cache),
-        "iss": build_tle_status("ISS", _iss_cache)
+        "last_pass": get_last_pass_data(past_passes),
+        "next_pass": get_next_pass_data(upcoming_noaa_passes),
+        "upcoming_passes": upcoming_noaa_passes,
+        "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc),
+        "map_refresh_seconds": MAP_REFRESH_SECONDS,
+        "tle_status": {
+            "noaa": build_tle_status("NOAA", _noaa_cache),
+            "iss": build_tle_status("ISS", _iss_cache)
+        }
     }
-}
 
 
 @app.route("/")
@@ -583,8 +571,6 @@ def api_map():
         "satellite_map": get_satellite_map_data(tracked_satellites, tracked_upcoming_passes, now_utc=now_utc)
     })
 
-
-import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
